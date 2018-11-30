@@ -33,7 +33,7 @@ public:
       const auto& accnt = control->db().get<account_object,by_name>( N(eosio.token) );
       abi_def abi;
       BOOST_REQUIRE_EQUAL(abi_serializer::to_abi(accnt.abi, abi), true);
-      abi_ser.set_abi(abi);
+      abi_ser.set_abi(abi, abi_serializer_max_time);
    }
 
    action_result push_action( const account_name& signer, const action_name &name, const variant_object &data ) {
@@ -42,7 +42,7 @@ public:
       action act;
       act.account = N(eosio.token);
       act.name    = name;
-      act.data    = abi_ser.variant_to_binary( action_type_name, data );
+      act.data    = abi_ser.variant_to_binary( action_type_name, data,abi_serializer_max_time );
 
       return base_tester::push_action( std::move(act), uint64_t(signer));
    }
@@ -52,7 +52,7 @@ public:
       auto symb = eosio::chain::symbol::from_string(symbolname);
       auto symbol_code = symb.to_symbol_code().value;
       vector<char> data = get_row_by_account( N(eosio.token), symbol_code, N(stat), symbol_code );
-      return data.empty() ? fc::variant() : abi_ser.binary_to_variant( "currency_stats", data );
+      return data.empty() ? fc::variant() : abi_ser.binary_to_variant( "currency_stats", data, abi_serializer_max_time );
    }
 
    fc::variant get_account( account_name acc, const string& symbolname)
@@ -60,7 +60,7 @@ public:
       auto symb = eosio::chain::symbol::from_string(symbolname);
       auto symbol_code = symb.to_symbol_code().value;
       vector<char> data = get_row_by_account( N(eosio.token), acc, N(accounts), symbol_code );
-      return data.empty() ? fc::variant() : abi_ser.binary_to_variant( "account", data );
+      return data.empty() ? fc::variant() : abi_ser.binary_to_variant( "account", data, abi_serializer_max_time );
    }
 
    action_result create( account_name issuer,
@@ -97,6 +97,16 @@ public:
            ( "to", to)
            ( "quantity", quantity)
            ( "memo", memo)
+      );
+   }
+
+   action_result open( account_name owner,
+                       const string& symbolname,
+                       account_name ram_payer    ) {
+      return push_action( ram_payer, N(open), mvo()
+           ( "owner", owner )
+           ( "symbol", symbolname )
+           ( "ram_payer", ram_payer )
       );
    }
 
@@ -336,6 +346,44 @@ BOOST_FIXTURE_TEST_CASE( transfer_tests, eosio_token_tester ) try {
 
 } FC_LOG_AND_RETHROW()
 
+BOOST_FIXTURE_TEST_CASE( open_tests, eosio_token_tester ) try {
+
+   auto token = create( N(alice), asset::from_string("1000 CERO"));
+
+   auto alice_balance = get_account(N(alice), "0,CERO");
+   BOOST_REQUIRE_EQUAL(true, alice_balance.is_null() );
+
+   BOOST_REQUIRE_EQUAL( success(), issue( N(alice), N(alice), asset::from_string("1000 CERO"), "issue" ) );
+
+   alice_balance = get_account(N(alice), "0,CERO");
+   REQUIRE_MATCHING_OBJECT( alice_balance, mvo()
+      ("balance", "1000 CERO")
+   );
+
+   auto bob_balance = get_account(N(bob), "0,CERO");
+   BOOST_REQUIRE_EQUAL(true, bob_balance.is_null() );
+
+   BOOST_REQUIRE_EQUAL( success(), open( N(bob), "0,CERO", N(alice) ) );
+
+   bob_balance = get_account(N(bob), "0,CERO");
+   REQUIRE_MATCHING_OBJECT( bob_balance, mvo()
+      ("balance", "0 CERO")
+   );
+
+   BOOST_REQUIRE_EQUAL( success(), transfer( N(alice), N(bob), asset::from_string("200 CERO"), "hola" ) );
+
+   bob_balance = get_account(N(bob), "0,CERO");
+   REQUIRE_MATCHING_OBJECT( bob_balance, mvo()
+      ("balance", "200 CERO")
+   );
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg( "symbol does not exist" ),
+                        open( N(carol), "0,INVALID", N(alice) ) );
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg( "symbol precision mismatch" ),
+                        open( N(carol), "1,CERO", N(alice) ) );
+
+} FC_LOG_AND_RETHROW()
 
 BOOST_FIXTURE_TEST_CASE( close_tests, eosio_token_tester ) try {
 

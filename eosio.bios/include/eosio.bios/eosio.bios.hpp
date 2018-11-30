@@ -1,19 +1,11 @@
-/**
- *  @file
- *  @copyright defined in eos/LICENSE.txt
- */
 #pragma once
-
 #include <eosiolib/action.hpp>
-#include <eosiolib/public_key.hpp>
-#include <eosiolib/print.hpp>
-#include <eosiolib/privileged.h>
+#include <eosiolib/crypto.h>
+#include <eosiolib/eosio.hpp>
+#include <eosiolib/privileged.hpp>
 #include <eosiolib/producer_schedule.hpp>
-#include <eosiolib/contract.hpp>
-#include <eosiolib/ignore.hpp>
 
-namespace eosiosystem {
-   using eosio::name;
+namespace eosio {
    using eosio::permission_level;
    using eosio::public_key;
    using eosio::ignore;
@@ -67,40 +59,14 @@ namespace eosiosystem {
                                      (schedule_version)(new_producers))
    };
 
-
-   struct [[eosio::table("abihash"), eosio::contract("eosio.system")]] abi_hash {
-      name              owner;
-      capi_checksum256  hash;
-      uint64_t primary_key()const { return owner.value; }
-
-      EOSLIB_SERIALIZE( abi_hash, (owner)(hash) )
-   };
-
-   /*
-    * Method parameters commented out to prevent generation of code that parses input data.
-    */
-   class [[eosio::contract("eosio.system")]] native : public eosio::contract {
+   class [[eosio::contract("eosio.bios")]] bios : public contract {
       public:
-
-         using eosio::contract::contract;
-
-         /**
-          *  Called after a new account is created. This code enforces resource-limits rules
-          *  for new accounts as well as new account naming conventions.
-          *
-          *  1. accounts cannot contain '.' symbols which forces all acccounts to be 12
-          *  characters long without '.' until a future account auction process is implemented
-          *  which prevents name squatting.
-          *
-          *  2. new accounts must stake a minimal number of tokens (as set in system parameters)
-          *     therefore, this method will execute an inline buyram from receiver for newacnt in
-          *     an amount equal to the current new account creation fee.
-          */
+         using contract::contract;
          [[eosio::action]]
          void newaccount( name             creator,
                           name             name,
                           ignore<authority> owner,
-                          ignore<authority> active);
+                          ignore<authority> active){}
 
 
          [[eosio::action]]
@@ -131,9 +97,74 @@ namespace eosiosystem {
          void onerror( ignore<uint128_t> sender_id, ignore<std::vector<char>> sent_trx ) {}
 
          [[eosio::action]]
-         void setabi( name account, const std::vector<char>& abi );
+         void setcode( name account, uint8_t vmtype, uint8_t vmversion, const std::vector<char>& code ) {}
 
          [[eosio::action]]
-         void setcode( name account, uint8_t vmtype, uint8_t vmversion, const std::vector<char>& code ) {}
+         void setpriv( name account, uint8_t is_priv ) {
+            require_auth( _self );
+            set_privileged( account.value, is_priv );
+         }
+
+         [[eosio::action]]
+         void setalimits( name account, int64_t ram_bytes, int64_t net_weight, int64_t cpu_weight ) {
+            require_auth( _self );
+            set_resource_limits( account.value, ram_bytes, net_weight, cpu_weight );
+         }
+
+         [[eosio::action]]
+         void setglimits( uint64_t ram, uint64_t net, uint64_t cpu ) {
+            (void)ram; (void)net; (void)cpu;
+            require_auth( _self );
+         }
+
+         [[eosio::action]]
+         void setprods( std::vector<eosio::producer_key> schedule ) {
+            (void)schedule; // schedule argument just forces the deserialization of the action data into vector<producer_key> (necessary check)
+            require_auth( _self );
+
+            constexpr size_t max_stack_buffer_size = 512;
+            size_t size = action_data_size();
+            char* buffer = (char*)( max_stack_buffer_size < size ? malloc(size) : alloca(size) );
+            read_action_data( buffer, size );
+            set_proposed_producers(buffer, size);
+         }
+
+         [[eosio::action]]
+         void setparams( const eosio::blockchain_parameters& params ) {
+            require_auth( _self );
+            set_blockchain_parameters( params );
+         }
+
+         [[eosio::action]]
+         void reqauth( name from ) {
+            require_auth( from );
+         }
+
+         [[eosio::action]]
+         void setabi( name account, const std::vector<char>& abi ) {
+            abi_hash_table table(_self, _self.value);
+            auto itr = table.find( account.value );
+            if( itr == table.end() ) {
+               table.emplace( account, [&]( auto& row ) {
+                  row.owner = account;
+                  sha256( const_cast<char*>(abi.data()), abi.size(), &row.hash );
+               });
+            } else {
+               table.modify( itr, same_payer, [&]( auto& row ) {
+                  sha256( const_cast<char*>(abi.data()), abi.size(), &row.hash );
+               });
+            }
+         }
+
+         struct [[eosio::table]] abi_hash {
+            name              owner;
+            capi_checksum256  hash;
+            uint64_t primary_key()const { return owner.value; }
+
+            EOSLIB_SERIALIZE( abi_hash, (owner)(hash) )
+         };
+
+         typedef eosio::multi_index< "abihash"_n, abi_hash > abi_hash_table;
    };
-}
+
+} /// namespace eosio
